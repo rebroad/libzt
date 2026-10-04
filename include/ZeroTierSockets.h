@@ -3010,26 +3010,29 @@ ZTS_API int ZTCALL zts_core_query_route(
     uint16_t* metric);
 
 /**
- * @brief Lock the core service so that queries about addresses, routes, paths, etc. can be
- * performed.
+ * @brief Return the number of currently active physical paths known for a peer.
  *
- * Notice: Core locking functions are intended to be used by high-level language wrappers.
- * Only lock the core if you know *exactly* what you are doing. zts_core_lock_obtain() and
- * zts_core_lock_release() must be called before and after this function.
+ * The core service must be locked with zts_core_lock_obtain() and unlocked with
+ * zts_core_lock_release() around this query. Expired paths are excluded.
  *
- * @return `ZTS_ERR_OK` if successful. `ZTS_ERR_SERVICE` if the core service is unavailable.
+ * @return The path count (including zero), `ZTS_ERR_NO_RESULT` if the peer is unknown,
+ *     or `ZTS_ERR_SERVICE` if the core service is unavailable.
  */
 ZTS_API int ZTCALL zts_core_query_path_count(uint64_t peer_id);
 
 /**
- * @brief Lock the core service so that queries about addresses, routes, paths, etc. can be
- * performed.
+ * @brief Return an active physical endpoint known for a peer.
  *
- * Notice: Core locking functions are intended to be used by high-level language wrappers.
- * Only lock the core if you know *exactly* what you are doing. zts_core_lock_obtain() and
- * zts_core_lock_release() must be called before and after this function.
+ * The core service must be locked with zts_core_lock_obtain() and unlocked with
+ * zts_core_lock_release() around this query. `idx` indexes the active paths reported by
+ * zts_core_query_path_count(). On success, `dst` contains an IP address and UDP port in
+ * ZeroTier's `IP/port` format (for example `198.51.100.7/9993` or `2001:db8::1/9993`).
+ * Expired paths are excluded. The destination buffer must fit the whole string including its
+ * terminating NUL; a short buffer returns `ZTS_ERR_ARG` and is left empty.
  *
- * @return `ZTS_ERR_OK` if successful. `ZTS_ERR_SERVICE` if the core service is unavailable.
+ * @return `ZTS_ERR_OK` if successful, `ZTS_ERR_NO_RESULT` if the peer is unknown,
+ *     `ZTS_ERR_ARG` if the index or arguments are invalid, or `ZTS_ERR_SERVICE` if the
+ *     core service is unavailable.
  */
 ZTS_API int ZTCALL zts_core_query_path(uint64_t peer_id, unsigned int idx, char* dst, unsigned int len);
 

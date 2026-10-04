@@ -39,6 +39,14 @@
 
 #define ZT_TCP_FALLBACK_RELAY "204.80.128.1/443"
 
+static bool isQueryablePeerPath(const ZT_PeerPhysicalPath& path)
+{
+    if (path.expired || (path.address.ss_family != AF_INET && path.address.ss_family != AF_INET6)) {
+        return false;
+    }
+    return ZeroTier::InetAddress(&path.address).port() != 0;
+}
+
 namespace ZeroTier {
 
 static int SnodeVirtualNetworkConfigFunction(
@@ -1280,7 +1288,36 @@ int NodeService::multicastSubCount(uint64_t net_id) const
 
 int NodeService::pathCount(uint64_t peer_id) const
 {
-    return ZTS_ERR_NO_RESULT;   // TODO
+    if (!peer_id) {
+        return ZTS_ERR_ARG;
+    }
+    if (!_node) {
+        return ZTS_ERR_SERVICE;
+    }
+
+    ZT_PeerList* peers = _node->peers();
+    if (!peers) {
+        return ZTS_ERR_NO_RESULT;
+    }
+
+    int count = ZTS_ERR_NO_RESULT;
+    for (unsigned long i = 0; i < peers->peerCount; ++i) {
+        const ZT_Peer& peer = peers->peers[i];
+        if (peer.address != peer_id) {
+            continue;
+        }
+
+        count = 0;
+        for (unsigned int j = 0; j < peer.pathCount; ++j) {
+            if (isQueryablePeerPath(peer.paths[j])) {
+                ++count;
+            }
+        }
+        break;
+    }
+
+    _node->freeQueryResult((void*)peers);
+    return count;
 }
 
 int NodeService::getAddrAtIdx(uint64_t net_id, unsigned int idx, char* dst, unsigned int len)
@@ -1372,7 +1409,53 @@ int NodeService::getMulticastSubAtIdx(uint64_t net_id, unsigned int idx, uint64_
 
 int NodeService::getPathAtIdx(uint64_t peer_id, unsigned int idx, char* path, unsigned int len)
 {
-    return ZTS_ERR_NO_RESULT;   // TODO
+    if (!peer_id || !path || len == 0) {
+        return ZTS_ERR_ARG;
+    }
+    path[0] = '\0';
+    if (!_node) {
+        return ZTS_ERR_SERVICE;
+    }
+
+    ZT_PeerList* peers = _node->peers();
+    if (!peers) {
+        return ZTS_ERR_NO_RESULT;
+    }
+
+    int result = ZTS_ERR_NO_RESULT;
+    for (unsigned long i = 0; i < peers->peerCount; ++i) {
+        const ZT_Peer& peer = peers->peers[i];
+        if (peer.address != peer_id) {
+            continue;
+        }
+
+        result = ZTS_ERR_ARG;
+        unsigned int activePathIndex = 0;
+        for (unsigned int j = 0; j < peer.pathCount; ++j) {
+            const ZT_PeerPhysicalPath& peerPath = peer.paths[j];
+            if (!isQueryablePeerPath(peerPath)) {
+                continue;
+            }
+            if (activePathIndex++ != idx) {
+                continue;
+            }
+
+            InetAddress endpoint(&peerPath.address);
+            char endpointString[64];
+            endpoint.toString(endpointString);
+            const size_t endpointLength = strlen(endpointString) + 1;
+            if (endpointLength > len) {
+                break;
+            }
+            memcpy(path, endpointString, endpointLength);
+            result = ZTS_ERR_OK;
+            break;
+        }
+        break;
+    }
+
+    _node->freeQueryResult((void*)peers);
+    return result;
 }
 
 int NodeService::getFirstAssignedAddr(uint64_t net_id, unsigned int family, struct zts_sockaddr_storage* addr)
