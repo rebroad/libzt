@@ -65,7 +65,12 @@ endif()
 
 set(PROJ_DIR ${PROJECT_SOURCE_DIR})
 set(LWIP_SRC_DIR "${PROJ_DIR}/ext/lwip/src")
-set(ZTO_SRC_DIR "${PROJ_DIR}/ext/ZeroTierOne")
+set(ZTS_ZEROTIERONE_SOURCE_DIR "${PROJ_DIR}/ext/ZeroTierOne" CACHE PATH
+    "Path to the ZeroTierOne source tree")
+set(ZTO_SRC_DIR "${ZTS_ZEROTIERONE_SOURCE_DIR}")
+if(NOT EXISTS "${ZTO_SRC_DIR}/node/Node.hpp")
+    message(FATAL_ERROR "ZeroTierOne source tree not found: ${ZTO_SRC_DIR}")
+endif()
 if(EXISTS "${ZTO_SRC_DIR}/node/ECC.hpp")
     # The exp3-compatible ZeroTierOne fork renamed C25519 to ECC, added
     # explicit Node_Config, and uses C++14/17 language features.
