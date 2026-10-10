@@ -258,7 +258,14 @@ NodeService::ReasonForTermination NodeService::run()
             cb.eventCallback = SnodeEventCallback;
             cb.pathCheckFunction = SnodePathCheckFunction;
             cb.pathLookupFunction = SnodePathLookupFunction;
+#ifdef ZTS_ZEROTIERONE_FORK_API
+            struct ZT_Node_Config config;
+            config.enableEncryptedHello = 0;
+            config.lowBandwidthMode = 0;
+            _node = new Node(this, (void*)0, &config, &cb, OSUtils::now());
+#else
             _node = new Node(this, (void*)0, &cb, OSUtils::now());
+#endif
         }
 
         unsigned int minPort = (_randomPortRangeStart ? _randomPortRangeStart : 20000);

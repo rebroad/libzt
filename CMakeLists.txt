@@ -66,6 +66,16 @@ endif()
 set(PROJ_DIR ${PROJECT_SOURCE_DIR})
 set(LWIP_SRC_DIR "${PROJ_DIR}/ext/lwip/src")
 set(ZTO_SRC_DIR "${PROJ_DIR}/ext/ZeroTierOne")
+if(EXISTS "${ZTO_SRC_DIR}/node/ECC.hpp")
+    # The exp3-compatible ZeroTierOne fork renamed C25519 to ECC, added
+    # explicit Node_Config, and uses C++14/17 language features.
+    set(ZTS_ZEROTIERONE_FORK_API TRUE)
+    set(ZTS_CXX_STANDARD 17)
+    add_definitions(-DZTS_ZEROTIERONE_FORK_API=1)
+else()
+    set(ZTS_ZEROTIERONE_FORK_API FALSE)
+    set(ZTS_CXX_STANDARD 11)
+endif()
 set(LIBZT_SRC_DIR "${PROJ_DIR}/src")
 set(CMAKE_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/bin)
 set(LIBRARY_OUTPUT_PATH ${CMAKE_CURRENT_BINARY_DIR}/lib)
@@ -405,7 +415,7 @@ else()
          ${STACK_PROTECTOR_FLAGS}")
 
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \
-         ${ZT_FLAGS} -Wall -Wextra -std=c++11")
+         ${ZT_FLAGS} -Wall -Wextra -std=c++${ZTS_CXX_STANDARD}")
 
     set(CMAKE_CXX_FLAGS_DEBUG
             "${CMAKE_CXX_FLAGS_DEBUG} \
