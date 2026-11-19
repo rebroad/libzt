@@ -23,6 +23,9 @@
 #include "VirtualTap.hpp"
 
 #include <string.h>
+#ifndef __WINDOWS__
+#include <pthread.h>
+#endif
 
 using namespace ZeroTier;
 
@@ -53,6 +56,16 @@ Events* zts_events;
 
 extern Mutex events_m;
 Mutex service_m;
+Mutex lifecycle_m;
+#if defined(__WINDOWS__)
+HANDLE zts_service_thread = NULL;
+HANDLE zts_callback_thread = NULL;
+#else
+pthread_t zts_service_thread;
+pthread_t zts_callback_thread;
+#endif
+bool zts_service_thread_started = false;
+bool zts_callback_thread_started = false;
 
 int init_subsystems()
 {
@@ -538,6 +551,9 @@ void* _runNodeService(void* arg)
 #endif
     try {
         zts_service->run();
+        if (zts_events) {
+            zts_events->clrState(ZTS_STATE_CALLBACKS_RUNNING);
+        }
         // Begin shutdown
         service_m.lock();
         zts_events->clrState(ZTS_STATE_NODE_RUNNING);
@@ -559,45 +575,109 @@ void* _runNodeService(void* arg)
     return NULL;
 }
 
+static bool called_from_node_thread()
+{
+#if defined(__WINDOWS__)
+    const DWORD currentThreadID = GetCurrentThreadId();
+    return (zts_service_thread_started && GetThreadId(zts_service_thread) == currentThreadID)
+        || (zts_callback_thread_started && GetThreadId(zts_callback_thread) == currentThreadID);
+#else
+    return (zts_service_thread_started && pthread_equal(pthread_self(), zts_service_thread))
+        || (zts_callback_thread_started && pthread_equal(pthread_self(), zts_callback_thread));
+#endif
+}
+
+static int wait_for_node_threads()
+{
+#if defined(__WINDOWS__)
+    if (zts_service_thread_started) {
+        if (WaitForSingleObject(zts_service_thread, INFINITE) != WAIT_OBJECT_0) {
+            return ZTS_ERR_GENERAL;
+        }
+        CloseHandle(zts_service_thread);
+        zts_service_thread = NULL;
+        zts_service_thread_started = false;
+    }
+    if (zts_callback_thread_started) {
+        if (WaitForSingleObject(zts_callback_thread, INFINITE) != WAIT_OBJECT_0) {
+            return ZTS_ERR_GENERAL;
+        }
+        CloseHandle(zts_callback_thread);
+        zts_callback_thread = NULL;
+        zts_callback_thread_started = false;
+    }
+#else
+    if (zts_service_thread_started) {
+        if (pthread_join(zts_service_thread, NULL) != 0) {
+            return ZTS_ERR_GENERAL;
+        }
+        zts_service_thread_started = false;
+    }
+    if (zts_callback_thread_started) {
+        if (pthread_join(zts_callback_thread, NULL) != 0) {
+            return ZTS_ERR_GENERAL;
+        }
+        zts_callback_thread_started = false;
+    }
+#endif
+    return ZTS_ERR_OK;
+}
+
 int zts_node_start()
 {
+    Mutex::Lock _l(lifecycle_m);
+    service_m.lock();
+    const bool serviceExists = zts_service != (NodeService*)0;
+    service_m.unlock();
+    if (serviceExists && zts_service_thread_started) {
+        return ZTS_ERR_SERVICE;
+    }
+    if (wait_for_node_threads() != ZTS_ERR_OK) {
+        return ZTS_ERR_GENERAL;
+    }
+
     ACQUIRE_SERVICE_OFFLINE();
-    // Start TCP/IP stack
     zts_lwip_driver_init();
-    // Start callback thread
-    int res = ZTS_ERR_OK;
     if (zts_events->hasCallback()) {
-#if defined(__WINDOWS__)
-        HANDLE callbackThread = CreateThread(NULL, 0, cbRun, NULL, 0, NULL);
-        // TODO: Check success
-#else
-        pthread_t cbThread;
-        if ((res = pthread_create(&cbThread, NULL, cbRun, NULL)) != 0) {}
-#endif
-#if defined(__linux__)
-        // pthread_setname_np(cbThread, ZTS_EVENT_CALLBACK_THREAD_NAME);
-#endif
-        if (res != ZTS_ERR_OK) {
-            zts_events->clrState(ZTS_STATE_CALLBACKS_RUNNING);
-            zts_events->clrCallback();
-        }
+        zts_events->enable();
         zts_events->setState(ZTS_STATE_CALLBACKS_RUNNING);
-    }
-    // Start ZeroTier service
 #if defined(__WINDOWS__)
-    HANDLE serviceThread = CreateThread(NULL, 0, _runNodeService, (void*)NULL, 0, NULL);
-    // TODO: Check success
+        zts_callback_thread = CreateThread(NULL, 0, cbRun, NULL, 0, NULL);
+        if (!zts_callback_thread) {
+            zts_events->clrState(ZTS_STATE_CALLBACKS_RUNNING);
+            return ZTS_ERR_GENERAL;
+        }
+        zts_callback_thread_started = true;
 #else
-    pthread_t service_thread;
-    if ((res = pthread_create(&service_thread, NULL, _runNodeService, (void*)NULL)) != 0) {}
+        const int callbackResult = pthread_create(&zts_callback_thread, NULL, cbRun, NULL);
+        if (callbackResult != 0) {
+            zts_events->clrState(ZTS_STATE_CALLBACKS_RUNNING);
+            return ZTS_ERR_GENERAL;
+        }
+        zts_callback_thread_started = true;
 #endif
-#if defined(__linux__)
-    // pthread_setname_np(service_thread, ZTS_SERVICE_THREAD_NAME);
-#endif
-    if (res != ZTS_ERR_OK) {
-        zts_events->clrState(ZTS_STATE_NODE_RUNNING);
     }
+
     zts_events->setState(ZTS_STATE_NODE_RUNNING);
+#if defined(__WINDOWS__)
+    zts_service_thread = CreateThread(NULL, 0, _runNodeService, NULL, 0, NULL);
+    if (!zts_service_thread) {
+        zts_events->clrState(ZTS_STATE_NODE_RUNNING);
+        zts_events->clrState(ZTS_STATE_CALLBACKS_RUNNING);
+        (void)wait_for_node_threads();
+        return ZTS_ERR_GENERAL;
+    }
+    zts_service_thread_started = true;
+#else
+    const int serviceResult = pthread_create(&zts_service_thread, NULL, _runNodeService, NULL);
+    if (serviceResult != 0) {
+        zts_events->clrState(ZTS_STATE_NODE_RUNNING);
+        zts_events->clrState(ZTS_STATE_CALLBACKS_RUNNING);
+        (void)wait_for_node_threads();
+        return ZTS_ERR_GENERAL;
+    }
+    zts_service_thread_started = true;
+#endif
     return ZTS_ERR_OK;
 }
 
@@ -619,29 +699,59 @@ int zts_node_get_port()
     return zts_service->getPrimaryPort();
 }
 
+static void request_node_stop()
+{
+    service_m.lock();
+    if (zts_events) {
+        zts_events->clrState(ZTS_STATE_CALLBACKS_RUNNING);
+        zts_events->clrState(ZTS_STATE_NODE_RUNNING);
+    }
+    if (zts_service) {
+        zts_service->terminate();
+    }
+    service_m.unlock();
+}
+
 int zts_node_stop()
 {
-    ACQUIRE_SERVICE(ZTS_ERR_SERVICE);
-    zts_events->clrState(ZTS_STATE_NODE_RUNNING);
-    zts_service->terminate();
-#if defined(__WINDOWS__)
-    WSACleanup();
-#endif
+    Mutex::Lock _l(lifecycle_m);
+    request_node_stop();
     return ZTS_ERR_OK;
+}
+
+int zts_node_stop_and_wait()
+{
+    Mutex::Lock _l(lifecycle_m);
+    if (called_from_node_thread()) {
+        return ZTS_ERR_SERVICE;
+    }
+    request_node_stop();
+    return wait_for_node_threads();
 }
 
 int zts_node_free()
 {
-    ACQUIRE_SERVICE(ZTS_ERR_SERVICE);
-    zts_events->setState(ZTS_STATE_FREE_CALLED);
-    zts_events->clrState(ZTS_STATE_NODE_RUNNING);
-    zts_service->terminate();
+    Mutex::Lock _l(lifecycle_m);
+    if (called_from_node_thread()) {
+        return ZTS_ERR_SERVICE;
+    }
+    request_node_stop();
+    const int waitResult = wait_for_node_threads();
+    if (waitResult != ZTS_ERR_OK) {
+        return waitResult;
+    }
+    if (zts_events) {
+        zts_events->setState(ZTS_STATE_FREE_CALLED);
+        zts_events->disable();
+    }
+    if (zts_events) {
+        zts_lwip_driver_shutdown();
+    }
+    delete zts_events;
+    zts_events = (Events*)0;
 #if defined(__WINDOWS__)
     WSACleanup();
 #endif
-    zts_lwip_driver_shutdown();
-    delete zts_events;
-    zts_events = (Events*)0;
     return ZTS_ERR_OK;
 }
 

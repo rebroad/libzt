@@ -1738,6 +1738,19 @@ ZTS_API int ZTCALL zts_node_get_port();
 ZTS_API int ZTCALL zts_node_stop();
 
 /**
+ * @brief Stop the node and wait until its service and callback threads have exited.
+ *
+ * Unlike `zts_node_stop()`, this function does not return while libzt still owns
+ * its physical UDP sockets. The service may be started again with
+ * `zts_node_start()`; the stack driver and library state remain initialized.
+ * Do not call this function from a libzt event callback.
+ *
+ * @return `ZTS_ERR_OK` after all node threads exit, or `ZTS_ERR_GENERAL` if a
+ *     thread could not be joined.
+ */
+ZTS_API int ZTCALL zts_node_stop_and_wait();
+
+/**
  * @brief Stop all background threads, bring down all transport services, free all
  *     resources. After calling this function an application restart will be
  *     required before the library can be used again. Callable only after the node
